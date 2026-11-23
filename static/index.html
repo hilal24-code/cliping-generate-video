@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YT Clipper</title>
+<style>
+:root{
+  --bg:#eef2f5; --panel:#ffffff; --ink:#14212b; --muted:#5b6b78;
+  --line:#cfd8df; --accent:#0a6e6e; --accent-ink:#ffffff; --warn:#b3261e;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#10181e; --panel:#18232b; --ink:#e6edf1; --muted:#93a4b0;
+        --line:#2b3a45; --accent:#4cc2b8; --accent-ink:#06201e; --warn:#ff8a80}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.5 "Segoe UI",system-ui,sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 20px 64px;
+  display:grid;gap:24px;grid-template-columns:1fr}
+h1{font-size:1.9rem;margin:0 0 4px;letter-spacing:-.02em}
+h2{font-size:1.1rem;margin:0 0 12px}
+p.sub{margin:0;color:var(--muted)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px}
+label{display:block;font-size:.85rem;color:var(--muted);margin-bottom:4px}
+input[type=text],select{width:100%;padding:10px 12px;border:1px solid var(--line);
+  border-radius:6px;background:transparent;color:var(--ink);font:inherit}
+select{background:var(--panel)}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.row>*{flex:1 1 140px}
+button{font:inherit;padding:10px 16px;border-radius:6px;border:1px solid var(--accent);
+  background:var(--accent);color:var(--accent-ink);cursor:pointer;font-weight:600}
+button.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+button:disabled{opacity:.5;cursor:wait}
+.player{aspect-ratio:16/9;width:100%;border:0;border-radius:8px;background:#000;margin-top:16px}
+.meta{margin-top:12px;color:var(--muted);font-size:.9rem}
+.check{display:flex;gap:8px;align-items:center;margin-top:14px}
+.status{margin-top:12px;min-height:1.4em;font-size:.92rem;overflow-wrap:anywhere}
+.status.err{color:var(--warn)}
+.prog{margin-top:14px}
+.bar{height:10px;border-radius:6px;background:var(--line);overflow:hidden}
+#barfill{height:100%;width:0;background:var(--accent);transition:width .4s}
+#progtext{margin-top:8px;font-size:.92rem}
+#progtext small{display:block;color:var(--muted)}
+.clips{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+.clip video{width:100%;border-radius:8px;background:#000;max-height:360px}
+.clip h3{font-size:.95rem;margin:8px 0 2px}
+.clip small{color:var(--muted)}
+.clip .acts{display:flex;gap:8px;margin-top:8px}
+.clip .acts a,.clip .acts button{font-size:.85rem;padding:6px 10px;border-radius:6px;
+  text-decoration:none;border:1px solid var(--line);color:var(--ink);background:transparent;cursor:pointer;font-weight:500}
+.items{margin-top:18px;border-top:1px solid var(--line);padding-top:16px}
+.items h3{font-size:1rem;margin:0 0 4px}
+.item{display:grid;gap:10px;grid-template-columns:2fr 1fr 1fr 1fr 1.6fr auto;align-items:end;
+  margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:8px}
+.item .sfxbox{display:flex;gap:6px}
+.item .sfxbox select{flex:1;min-width:0}
+.item button.small{padding:10px 12px;font-weight:500}
+.mysfx{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.chip{display:flex;align-items:center;gap:6px;padding:4px 6px 4px 12px;border:1px solid var(--line);
+  border-radius:999px;font-size:.88rem}
+.chip button{padding:2px 8px;font-size:.8rem;font-weight:500;border-radius:999px}
+.item.mute{grid-template-columns:1fr 1fr 1.6fr auto}
+.hint{color:var(--muted);font-size:.85rem;margin:2px 0 0}
+@media (max-width:760px){.item,.item.mute{grid-template-columns:1fr 1fr}.item .wide{grid-column:1/-1}}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>YT Clipper</h1>
+    <p class="sub">Tempel link, tentukan menit mulai dan selesai, unduh klipnya sebagai MP4.</p>
+  </header>
+
+  <section class="panel">
+    <label for="url">Link YouTube</label>
+    <div class="row">
+      <input id="url" type="text" placeholder="https://www.youtube.com/watch?v=...">
+      <button id="load" style="flex:0 0 auto">Muat video</button>
+    </div>
+    <div id="info" class="meta"></div>
+
+    <div id="editor" class="hidden">
+      <iframe id="player" class="player" allowfullscreen
+        allow="accelerometer; encrypted-media; picture-in-picture"></iframe>
+
+      <div class="row" style="margin-top:16px">
+        <div><label for="start">Mulai (mm:ss atau detik)</label>
+          <input id="start" type="text" value="0:00"></div>
+        <div><label for="end">Selesai</label>
+          <input id="end" type="text" value="0:30"></div>
+        <div><label for="title">Judul klip (opsional)</label>
+          <input id="title" type="text"></div>
+        <button class="ghost" id="preview" style="flex:0 0 auto">Pratinjau rentang</button>
+      </div>
+
+      <label class="check"><input type="checkbox" id="vertical">
+        Vertikal 9:16 (untuk Shorts, Reels, TikTok)</label>
+
+      <div id="vopts" class="row hidden" style="margin-top:12px">
+        <div><label for="hook">Teks judul di video (opsional, emoji boleh)</label>
+          <input id="hook" type="text" placeholder="JASON DAN LUCIA CARI UANG, TAPI KOK... 😱"></div>
+        <div><label for="hsecs">Teks tampil (detik, 0 = terus)</label>
+          <input id="hsecs" type="text" value="5"></div>
+        <div><label for="facecam">Posisi facecam di video asli</label>
+          <select id="facecam">
+            <option value="none">Tidak ada facecam</option>
+            <option value="br">Kanan bawah</option>
+            <option value="bl">Kiri bawah</option>
+            <option value="tr">Kanan atas</option>
+            <option value="tl">Kiri atas</option>
+          </select></div>
+        <div><label for="fsize">Lebar facecam (% dari video)</label>
+          <input id="fsize" type="text" value="25"></div>
+        <div><label for="foff">Geser facecam menjauhi tepi (%)</label>
+          <input id="foff" type="text" value="17"></div>
+      </div>
+
+      <div class="items">
+        <h3>Teks &amp; efek suara tambahan</h3>
+        <p class="hint" id="lenhint">Waktu muncul dihitung dari awal klip (0:00). Emoji boleh. Kosongkan teks kalau hanya mau efek suara. Suara sendiri bisa diunggah lewat tombol Upload.</p>
+        <div id="itemlist"></div>
+        <div class="row" style="margin-top:12px;align-items:center">
+          <button class="ghost" id="additem" style="flex:0 0 auto">+ Tambah teks / efek</button>
+          <button class="ghost" id="upsfx" style="flex:0 0 auto">⬆ Upload efek suara</button>
+          <input id="sfxfile" type="file" multiple class="hidden"
+            accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac">
+          <div style="flex:0 0 190px"><label for="sfxvol">Volume efek suara (%)</label>
+            <input id="sfxvol" type="text" value="100"></div>
+        </div>
+        <div id="mysfx" class="mysfx"></div>
+      </div>
+
+      <div class="items">
+        <h3>Mute / sensor suara streamer</h3>
+        <p class="hint" id="mutehint">Bisukan suara asli di detik tertentu, misalnya saat streamer bicara kasar. Waktu dihitung dari awal klip (0:00), boleh pecahan seperti 0:12.5. Beri margin sekitar 0,2 detik di awal dan akhir supaya kata tidak bocor.</p>
+        <div id="mutelist"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="ghost" id="addmute" style="flex:0 0 auto">+ Tambah mute</button>
+        </div>
+      </div>
+
+      <div style="margin-top:14px"><button id="make">Buat klip</button></div>
+    </div>
+
+    <div id="prog" class="prog hidden">
+      <div class="bar"><div id="barfill"></div></div>
+      <div id="progtext"></div>
+    </div>
+    <div id="status" class="status" role="status"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Klip kamu</h2>
+    <div id="clips" class="clips"></div>
+    <p id="empty" class="sub">Belum ada klip.</p>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const status = (t, err) => { $('status').textContent = t; $('status').className = 'status' + (err ? ' err' : ''); };
+
+function videoId(u){
+  const m = u.match(/(?:[?&]v=|youtu\.be\/|\/(?:shorts|embed|live|v)\/)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+function secs(v){
+  const p = String(v).trim().split(':').map(Number);
+  if (p.some(isNaN) || p.length > 3) return NaN;
+  return p.reduce((a, b) => a * 60 + b, 0);
+}
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const text = await r.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch {}
+  if (!r.ok) throw new Error(
+    (typeof data.detail === 'string' && data.detail) ||
+    `Server error ${r.status}. Lihat jendela terminal tempat uvicorn berjalan.`);
+  return data;
+}
+const post = (path, body) => api(path, {method:'POST',
+  headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+
+$('load').onclick = async () => {
+  const url = $('url').value.trim(), id = videoId(url);
+  if (!id) return status('Link YouTube tidak dikenali.', true);
+  status('Memuat info video...');
+  try {
+    const d = await post('/api/info', {url});
+    const dur = d.duration ? Math.floor(d.duration/60) + ' menit' : '';
+    $('info').textContent = `${d.title} ${dur ? '· ' + dur : ''}`;
+    $('title').value = d.title || '';
+    $('player').src = `https://www.youtube.com/embed/${id}`;
+    $('editor').classList.remove('hidden');
+    status('');
+  } catch(e){ status(e.message, true); }
+};
+
+$('preview').onclick = () => {
+  const id = videoId($('url').value), s = secs($('start').value), e = secs($('end').value);
+  if (isNaN(s) || isNaN(e) || e <= s) return status('Rentang waktu tidak valid.', true);
+  $('player').src = `https://www.youtube.com/embed/${id}?start=${s}&end=${e}&autoplay=1`;
+  status('');
+};
+
+$('vertical').onchange = () => $('vopts').classList.toggle('hidden', !$('vertical').checked);
+
+
+// ---------- teks & efek suara tambahan
+let sfxList = [];
+async function loadSfx(){
+  try { sfxList = await api('/api/sfx'); } catch { sfxList = []; }
+  refreshSfxSelects();
+  renderMySfx();
+}
+function fillSfxOptions(sel, keep){
+  sel.innerHTML = '';
+  const none = document.createElement('option'); none.value = ''; none.textContent = 'Tanpa suara'; sel.append(none);
+  for (const s of sfxList){
+    const o = document.createElement('option'); o.value = s.name;
+    o.textContent = s.builtin ? s.name : '★ ' + s.name; sel.append(o);
+  }
+  sel.value = sfxList.some(s => s.name === keep) ? keep : '';
+}
+function refreshSfxSelects(){
+  document.querySelectorAll('.f-sfx').forEach(sel => fillSfxOptions(sel, sel.value));
+}
+function renderMySfx(){
+  const box = $('mysfx'); box.innerHTML = '';
+  for (const s of sfxList.filter(x => !x.builtin)){
+    const c = document.createElement('div'); c.className = 'chip';
+    const n = document.createElement('span'); n.textContent = '★ ' + s.name;
+    const p = document.createElement('button'); p.type = 'button'; p.className = 'ghost';
+    p.textContent = '▶'; p.title = 'Dengarkan'; p.onclick = () => new Audio(s.file).play();
+    const d = document.createElement('button'); d.type = 'button'; d.className = 'ghost';
+    d.textContent = '✕'; d.title = 'Hapus efek ini';
+    d.onclick = async () => {
+      try { await api('/api/sfx/' + encodeURIComponent(s.name), {method:'DELETE'}); }
+      catch(e){ return status(e.message, true); }
+      await loadSfx();
+    };
+    c.append(n, p, d); box.append(c);
+  }
+}
+async function uploadSfx(files){
+  let ok = 0;
+  for (const f of files){
+    if (f.size > 15 * 1024 * 1024){ status(`${f.name}: terlalu besar (maksimal 15 MB).`, true); continue; }
+    try {
+      status(`Mengunggah ${f.name}...`);
+      await api('/api/sfx/upload?name=' + encodeURIComponent(f.name),
+                {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:f});
+      ok++;
+    } catch(e){ status(`${f.name}: ${e.message}`, true); }
+  }
+  await loadSfx();
+  if (ok) status(`${ok} efek suara berhasil diunggah. Pilih di kolom "Efek suara" (bertanda ★).`);
+}
+function mkField(label, el, cls){
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  const l = document.createElement('label'); l.textContent = label;
+  d.append(l, el);
+  return d;
+}
+function addItem(){
+  if ($('itemlist').children.length >= 12) return status('Maksimal 12 teks/efek per klip.', true);
+  const row = document.createElement('div'); row.className = 'item';
+
+  const text = document.createElement('input'); text.type = 'text'; text.className = 'f-text';
+  text.placeholder = 'Contoh: WAH MANTAP 🔥';
+  const at = document.createElement('input'); at.type = 'text'; at.className = 'f-at'; at.value = '0:03';
+  const dur = document.createElement('input'); dur.type = 'text'; dur.className = 'f-dur'; dur.value = '3';
+  const pos = document.createElement('select'); pos.className = 'f-pos';
+  for (const [v, t] of [['center','Tengah'],['top','Atas'],['bottom','Bawah']]){
+    const o = document.createElement('option'); o.value = v; o.textContent = t; pos.append(o);
+  }
+  const sfx = document.createElement('select'); sfx.className = 'f-sfx';
+  fillSfxOptions(sfx, '');
+  const play = document.createElement('button'); play.type = 'button'; play.className = 'ghost small';
+  play.textContent = '▶'; play.title = 'Dengarkan efek suara';
+  play.onclick = () => {
+    const s = sfxList.find(x => x.name === sfx.value);
+    if (s) new Audio(s.file).play();
+  };
+  const sfxbox = document.createElement('div'); sfxbox.className = 'sfxbox'; sfxbox.append(sfx, play);
+  const del = document.createElement('button'); del.type = 'button'; del.className = 'ghost small';
+  del.textContent = 'Hapus'; del.onclick = () => row.remove();
+
+  row.append(mkField('Teks', text, 'wide'), mkField('Muncul di (mm:ss)', at),
+             mkField('Tampil (detik)', dur), mkField('Posisi', pos),
+             mkField('Efek suara', sfxbox), del);
+  $('itemlist').append(row);
+}
+function collectItems(){
+  return [...$('itemlist').children].map(r => ({
+    text: r.querySelector('.f-text').value.trim(),
+    at: r.querySelector('.f-at').value.trim().replace(',', '.') || '0:00',
+    dur: parseFloat(String(r.querySelector('.f-dur').value).replace(',', '.')) || 3,
+    pos: r.querySelector('.f-pos').value,
+    sfx: r.querySelector('.f-sfx').value
+  })).filter(i => i.text || i.sfx);
+}
+function fmtLen(sec){
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+function updateLen(){
+  const s0 = secs($('start').value), e0 = secs($('end').value);
+  if (!isNaN(s0) && !isNaN(e0) && e0 > s0)
+    $('mutehint').textContent = `Bisukan suara asli di detik tertentu, misalnya saat streamer bicara kasar. Durasi klip ${fmtLen(e0 - s0)}; waktu dihitung dari awal klip (0:00), boleh pecahan seperti 0:12.5. Beri margin sekitar 0,2 detik di awal dan akhir supaya kata tidak bocor.`;
+  const s = secs($('start').value), e = secs($('end').value);
+  $('lenhint').textContent = (!isNaN(s) && !isNaN(e) && e > s)
+    ? `Durasi klip ${fmtLen(e - s)}. Waktu muncul dihitung dari awal klip (0:00), bukan dari video asli. Emoji boleh. Kosongkan teks kalau hanya mau efek suara.`
+    : 'Waktu muncul dihitung dari awal klip (0:00). Emoji boleh. Kosongkan teks kalau hanya mau efek suara.';
+}
+$('additem').onclick = addItem;
+$('upsfx').onclick = () => $('sfxfile').click();
+$('sfxfile').onchange = async () => { await uploadSfx([...$('sfxfile').files]); $('sfxfile').value = ''; };
+$('start').oninput = updateLen;
+$('end').oninput = updateLen;
+loadSfx();
+
+// ---------- mute / sensor
+const num = v => parseFloat(String(v).replace(',', '.'));
+function addMute(){
+  if ($('mutelist').children.length >= 30) return status('Maksimal 30 mute per klip.', true);
+  const row = document.createElement('div'); row.className = 'item mute';
+  const at = document.createElement('input'); at.type = 'text'; at.className = 'm-at'; at.value = '0:05';
+  const dur = document.createElement('input'); dur.type = 'text'; dur.className = 'm-dur'; dur.value = '1';
+  const mode = document.createElement('select'); mode.className = 'm-mode';
+  for (const [v, t] of [['beep','Bunyi sensor (tiiit)'],['silent','Hening']]){
+    const o = document.createElement('option'); o.value = v; o.textContent = t; mode.append(o);
+  }
+  const del = document.createElement('button'); del.type = 'button'; del.className = 'ghost small';
+  del.textContent = 'Hapus'; del.onclick = () => row.remove();
+  row.append(mkField('Mulai mute (mm:ss)', at), mkField('Lama (detik)', dur),
+             mkField('Diganti dengan', mode), del);
+  $('mutelist').append(row);
+}
+function collectMutes(){
+  return [...$('mutelist').children].map(r => ({
+    at: r.querySelector('.m-at').value.trim().replace(',', '.') || '0:00',
+    dur: num(r.querySelector('.m-dur').value) || 1,
+    beep: r.querySelector('.m-mode').value === 'beep'
+  }));
+}
+$('addmute').onclick = addMute;
+
+function showProg(p, stage, detail){
+  $('prog').classList.remove('hidden');
+  $('barfill').style.width = p + '%';
+  $('progtext').innerHTML = '';
+  const b = document.createElement('b');
+  b.textContent = `${Math.round(p)}% · ${stage}`;
+  $('progtext').append(b);
+  if (detail){
+    const s = document.createElement('small');
+    s.textContent = detail;
+    $('progtext').append(s);
+  }
+}
+
+$('make').onclick = async () => {
+  const btn = $('make'); btn.disabled = true;
+  status('');
+  showProg(0, 'Memulai', '');
+  try {
+    const {job} = await post('/api/clip', {
+      url: $('url').value.trim(), start: $('start').value, end: $('end').value,
+      vertical: $('vertical').checked, title: $('title').value.trim(),
+      hook: $('hook').value.trim(),
+      hook_secs: isNaN(parseFloat($('hsecs').value)) ? 5 : parseFloat($('hsecs').value),
+      facecam: $('facecam').value,
+      face_size: (parseFloat($('fsize').value) || 25) / 100,
+      face_off: (parseFloat($('foff').value) || 0) / 100,
+      items: collectItems(),
+      mutes: collectMutes(),
+      sfx_vol: (isNaN(parseFloat($('sfxvol').value)) ? 100 : parseFloat($('sfxvol').value)) / 100
+    });
+    while (true) {
+      await new Promise(r => setTimeout(r, 800));
+      const j = await api('/api/jobs/' + job);
+      showProg(j.percent, j.stage, j.detail);
+      if (j.status === 'error') throw new Error(j.error || 'Gagal membuat klip');
+      if (j.status === 'done') break;
+    }
+    status('Klip selesai.');
+    loadClips();
+  } catch(e){
+    $('prog').classList.add('hidden');
+    status(e.message, true);
+  }
+  btn.disabled = false;
+};
+
+async function loadClips(){
+  const items = await api('/api/clips');
+  $('empty').classList.toggle('hidden', items.length > 0);
+  $('clips').innerHTML = '';
+  for (const c of items){
+    const el = document.createElement('div');
+    el.className = 'clip';
+    const v = document.createElement('video'); v.controls = true; v.src = c.file; v.preload = 'metadata';
+    const h = document.createElement('h3'); h.textContent = c.title;
+    const s = document.createElement('small');
+    s.textContent = `${c.start} sampai ${c.end}${c.vertical ? ' (9:16)' : ''}${c.src ? ' · sumber ' + c.src : ''}`;
+    const acts = document.createElement('div'); acts.className = 'acts';
+    const dl = document.createElement('a'); dl.href = c.file; dl.download = c.title + '.mp4'; dl.textContent = 'Unduh';
+    const del = document.createElement('button'); del.textContent = 'Hapus';
+    del.onclick = async () => { await api('/api/clips/' + c.id, {method:'DELETE'}); loadClips(); };
+    acts.append(dl, del);
+    el.append(v, h, s, acts);
+    $('clips').append(el);
+  }
+}
+loadClips();
+</script>
+</body>
+</html>

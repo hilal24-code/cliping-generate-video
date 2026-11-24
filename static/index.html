@@ -64,6 +64,10 @@ button:disabled{opacity:.5;cursor:wait}
 .item.mute{grid-template-columns:1fr 1fr 1.6fr auto}
 .hint{color:var(--muted);font-size:.85rem;margin:2px 0 0}
 @media (max-width:760px){.item,.item.mute{grid-template-columns:1fr 1fr}.item .wide{grid-column:1/-1}}
+.clip details{margin-top:8px;font-size:.85rem}
+.clip summary{cursor:pointer;color:var(--muted)}
+.clip pre{white-space:pre-wrap;margin:6px 0 0;font:inherit;max-height:220px;overflow:auto;
+  padding:8px;border:1px solid var(--line);border-radius:6px}
 .hidden{display:none}
 </style>
 </head>
@@ -139,6 +143,56 @@ button:disabled{opacity:.5;cursor:wait}
         <div id="mutelist"></div>
         <div class="row" style="margin-top:12px">
           <button class="ghost" id="addmute" style="flex:0 0 auto">+ Tambah mute</button>
+        </div>
+      </div>
+
+      <div class="items">
+        <h3>Subtitle otomatis (AI)</h3>
+        <label class="check" style="margin-top:6px"><input type="checkbox" id="subs">
+          Buat subtitle dari suara video</label>
+        <p class="hint">Dikerjakan di komputermu (Whisper), videonya tidak dikirim ke mana pun. Pertama kali memakai sebuah model, ada unduhan sekali saja: tiny ±75 MB, base ±140 MB, small ±460 MB, medium ±1,5 GB, turbo ±1,6 GB. Untuk bahasa Indonesia, pilih medium atau turbo. Makin besar model makin lama prosesnya. Kalau masih banyak ucapan yang hilang, coba Sensitivitas Maksimal dan isi istilah khusus. Hasil dengar AI bisa dilihat di bawah klip.</p>
+        <div id="subopts" class="row hidden" style="margin-top:10px">
+          <div><label for="sublang">Bahasa ucapan</label>
+            <select id="sublang">
+              <option value="id">Indonesia</option>
+              <option value="en">Inggris</option>
+              <option value="auto">Otomatis</option>
+            </select></div>
+          <div><label for="submodel">Model AI</label>
+            <select id="submodel">
+              <option value="tiny">tiny (tercepat)</option>
+              <option value="base">base (cepat)</option>
+              <option value="small">small</option>
+              <option value="medium" selected>medium (disarankan)</option>
+              <option value="turbo">turbo (paling akurat)</option>
+            </select></div>
+          <div><label for="substyle">Gaya</label>
+            <select id="substyle">
+              <option value="word">Kata menyala</option>
+              <option value="plain">Biasa</option>
+            </select></div>
+          <div><label for="subpos">Posisi</label>
+            <select id="subpos">
+              <option value="bottom">Bawah</option>
+              <option value="center">Tengah</option>
+              <option value="top">Atas</option>
+            </select></div>
+          <div><label for="subsens">Sensitivitas ucapan</label>
+            <select id="subsens">
+              <option value="normal">Normal</option>
+              <option value="max">Maksimal (tangkap semua)</option>
+            </select></div>
+          <div style="flex:2 1 280px"><label for="subterms">Istilah / nama khusus (opsional)</label>
+            <input id="subterms" type="text" placeholder="mis. Jason, Lucia, Vice City, GTA"></div>
+          <div style="flex:1 1 100%"><label class="check" style="margin:0"><input type="checkbox" id="subonly" checked>
+            Hanya suara streamer: buang bagian yang bahasanya beda (misalnya dialog game berbahasa Inggris). Tidak berlaku kalau bahasa diatur Otomatis.</label></div>
+          <div><label for="subcolor">Warna kata menyala</label>
+            <select id="subcolor">
+              <option value="yellow">Kuning</option>
+              <option value="green">Hijau</option>
+              <option value="pink">Merah muda</option>
+              <option value="cyan">Cyan</option>
+            </select></div>
         </div>
       </div>
 
@@ -350,6 +404,7 @@ function collectMutes(){
   }));
 }
 $('addmute').onclick = addMute;
+$('subs').onchange = () => $('subopts').classList.toggle('hidden', !$('subs').checked);
 
 function showProg(p, stage, detail){
   $('prog').classList.remove('hidden');
@@ -380,6 +435,10 @@ $('make').onclick = async () => {
       face_off: (parseFloat($('foff').value) || 0) / 100,
       items: collectItems(),
       mutes: collectMutes(),
+      subs: $('subs').checked, sub_lang: $('sublang').value, sub_model: $('submodel').value,
+      sub_style: $('substyle').value, sub_pos: $('subpos').value, sub_color: $('subcolor').value,
+      sub_sens: $('subsens').value, sub_terms: $('subterms').value.trim(),
+      sub_only: $('subonly').checked,
       sfx_vol: (isNaN(parseFloat($('sfxvol').value)) ? 100 : parseFloat($('sfxvol').value)) / 100
     });
     while (true) {
@@ -415,6 +474,12 @@ async function loadClips(){
     del.onclick = async () => { await api('/api/clips/' + c.id, {method:'DELETE'}); loadClips(); };
     acts.append(dl, del);
     el.append(v, h, s, acts);
+    if (c.transcript){
+      const det = document.createElement('details');
+      const sm = document.createElement('summary'); sm.textContent = 'Lihat hasil dengar AI';
+      const pre = document.createElement('pre'); pre.textContent = c.transcript;
+      det.append(sm, pre); el.append(det);
+    }
     $('clips').append(el);
   }
 }

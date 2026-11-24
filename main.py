@@ -80,6 +80,15 @@ class ClipReq(BaseModel):
     items: List[ItemReq] = []
     mutes: List[MuteReq] = []
     sfx_vol: float = 1.0      # volume efek suara
+    subs: bool = False        # subtitle otomatis (Whisper)
+    sub_lang: str = "id"      # id | en | auto
+    sub_model: str = "small"  # tiny | base | small | medium
+    sub_style: str = "word"   # word (kata aktif menyala) | plain
+    sub_pos: str = "bottom"   # bottom | center | top
+    sub_color: str = "yellow" # warna kata aktif
+    sub_sens: str = "normal"  # normal | max (tanpa filter VAD, tangkap semua ucapan)
+    sub_terms: str = ""       # istilah/nama khusus untuk membantu AI (mis. nama karakter)
+    sub_only: bool = True     # buang bagian yang bahasanya beda (dialog game), simpan suara streamer
 
 
 @app.post("/api/info")
@@ -319,7 +328,7 @@ def place_y(pos: str, H: int, bh: int) -> int:
 
 
 def encode(req: ClipReq, items: list, mutes: list, jid: str, raw: Path, final: Path,
-           src: str, on_enc, temp: list):
+           src: str, on_enc, temp: list, subs=None):
     """Susun video akhir: crop, teks judul, teks custom, efek suara."""
     sw, sh = (int(v) for v in src.split("x")[:2])
     W, H = (1080, 1920) if req.vertical else (sw, sh)
@@ -363,7 +372,10 @@ def encode(req: ClipReq, items: list, mutes: list, jid: str, raw: Path, final: P
         enable = f":enable='{en}'" if en else ""
         g += f";[{cur}][{idx}:v]overlay=x=(W-w)/2:y={y}{enable}[{nxt}]"
         cur = nxt
-    g += f";[{cur}]null[v]"
+    if subs:
+        g += f";[{cur}]ass={subs['ass']}:fontsdir={subs['fonts']}[v]"
+    else:
+        g += f";[{cur}]null[v]"
 
     audio_map = "0:a?"
     if has_audio and (sfx_in or mutes):
@@ -404,12 +416,272 @@ def encode(req: ClipReq, items: list, mutes: list, jid: str, raw: Path, final: P
     head = ["ffmpeg", "-y", "-loglevel", "error", "-nostats",
             "-progress", "pipe:1", "-i", raw.name]
 
-    if req.vertical or overlays or ((sfx_in or mutes) and has_audio):
+    if req.vertical or overlays or subs or ((sfx_in or mutes) and has_audio):
         cmd = [*head, *inputs, "-filter_complex", g,
                "-map", "[v]", "-map", audio_map, *enc, final.name]
     else:
         cmd = [*head, *enc, final.name]
     stream(cmd, cwd=CLIPS, on_line=on_enc)
+
+
+# ------------------------------------------------------- subtitle otomatis
+
+WHISPER_MODELS = {}
+SUB_COLORS = {"yellow": (255, 229, 0), "green": (61, 255, 107),
+              "pink": (255, 77, 166), "cyan": (0, 229, 255)}
+
+
+def decode_audio_16k(path: Path):
+    """Ekstrak suara video jadi data mono 16 kHz lewat ffmpeg (tanpa PyAV)."""
+    import numpy as np
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg belum terpasang atau belum ada di PATH.")
+    p = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn",
+                        "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                       capture_output=True)
+    if p.returncode != 0 or len(p.stdout) < 4 * 1600:
+        raise RuntimeError("Video ini tidak punya suara untuk dibuat subtitle.")
+    return np.frombuffer(p.stdout, dtype=np.float32).copy()
+
+
+def _lang_model(WhisperModel, size: str):
+    """Model kecil untuk mengenali bahasa (cepat). Dipakai ulang kalau sudah ada."""
+    key = size if size in ("tiny", "base", "small") else "base"
+    m = WHISPER_MODELS.get(key)
+    if m is None:
+        m = WhisperModel(key, device="cpu", compute_type="int8")
+        WHISPER_MODELS[key] = m
+    return m
+
+
+def transcribe_words(path: Path, lang: str, size: str, dur: float, on_model, on_progress,
+                     sens: str = "normal", terms: str = "", only_lang: bool = False,
+                     on_filter=None):
+    """Dengarkan suara dengan Whisper (lokal).
+    Return (kata-kata, bagian yang dibuang, catatan)."""
+    try:
+        from faster_whisper import WhisperModel
+    except ModuleNotFoundError as ex:
+        if getattr(ex, "name", "") == "faster_whisper":
+            raise RuntimeError("faster-whisper belum terpasang. Jalankan: "
+                               "python -m pip install faster-whisper, lalu restart server.")
+        raise RuntimeError(f"Komponen faster-whisper tidak lengkap ({ex}). "
+                           "Coba: python -m pip install --upgrade faster-whisper")
+    except ImportError as ex:
+        raise RuntimeError(f"faster-whisper terpasang tapi gagal dimuat: {ex}")
+
+    audio = decode_audio_16k(path)      # dibaca dulu, supaya error "tanpa suara" muncul sebelum unduh model
+    model = WHISPER_MODELS.get(size)
+    if model is None:
+        on_model()
+        real = "large-v3-turbo" if size == "turbo" else size
+        try:
+            model = WhisperModel(real, device="cpu", compute_type="int8")
+        except ValueError as ex:
+            raise RuntimeError(f"Model {size} tidak tersedia di faster-whisper kamu ({ex}). "
+                               "Pilih model lain, atau update: python -m pip install -U faster-whisper")
+        WHISPER_MODELS[size] = model
+
+    kw = dict(language=None if lang == "auto" else lang,
+              word_timestamps=True, beam_size=5, condition_on_previous_text=False,
+              no_speech_threshold=None)          # jangan buang segmen yang diragukan
+    if sens == "max":
+        kw["vad_filter"] = False                 # tangkap semua suara, termasuk yang tertutup suara game
+    else:
+        kw["vad_filter"] = True                  # filter VAD dibuat longgar
+        kw["vad_parameters"] = dict(threshold=0.25, min_silence_duration_ms=1000,
+                                    speech_pad_ms=400)
+    if terms.strip():
+        kw["hotwords"] = terms.strip()[:200]
+    try:
+        segments, _ = model.transcribe(audio, **kw)
+    except TypeError:                            # faster-whisper lama tanpa hotwords
+        kw.pop("hotwords", None)
+        segments, _ = model.transcribe(audio, **kw)
+
+    segs = []
+    for seg in segments:
+        on_progress(min(max(seg.end / dur, 0.0), 1.0))
+        ws = []
+        for w in (seg.words or []):
+            t = (w.word or "").strip()
+            if t:
+                ws.append({"raw": t, "start": float(w.start), "end": float(w.end)})
+        if ws:
+            segs.append({"start": float(seg.start), "end": float(seg.end), "words": ws})
+
+    dropped, note = [], ""
+    if only_lang and lang != "auto" and segs:
+        try:
+            lid = _lang_model(WhisperModel, size)
+            total, kept = len(segs), []
+            secs = len(audio) / 16000
+            for i, sg in enumerate(segs):
+                if on_filter:
+                    on_filter(i, total)
+                a0 = int(max(0.0, sg["start"] - 0.2) * 16000)
+                a1 = int(min(secs, sg["end"] + 0.2) * 16000)
+                chunk = audio[a0:a1]
+                if len(chunk) < 16000 * 0.8:     # terlalu pendek untuk dinilai: simpan
+                    kept.append(sg)
+                    continue
+                top, ptop, allp = lid.detect_language(audio=chunk)[:3]
+                pt = dict(allp).get(lang, 0.0)
+                if top != lang and pt < 0.3 and ptop >= 0.5:
+                    dropped.append({"start": sg["start"], "lang": top,
+                                    "text": " ".join(w["raw"] for w in sg["words"])})
+                else:
+                    kept.append(sg)
+            segs = kept
+        except Exception as ex:                  # penyaringan gagal: pakai semua, beri tahu
+            note = f"Penyaringan bahasa gagal ({ex}); semua ucapan dipakai."
+    words = [w for sg in segs for w in sg["words"]]
+    return words, dropped, note
+
+
+def transcript_text(words, dropped=None, note: str = "") -> str:
+    """Teks hasil dengar AI dengan penanda waktu, untuk dicek pengguna."""
+    def stamp(t):
+        return f"[{int(t // 60)}:{int(t % 60):02d}]"
+    lines, cur, t0 = [], [], 0.0
+    for w in words:
+        if not cur:
+            t0 = w["start"]
+        cur.append(w["raw"])
+        if len(cur) >= 12 or w["raw"][-1:] in ".?!":
+            lines.append(f"{stamp(t0)} " + " ".join(cur))
+            cur = []
+    if cur:
+        lines.append(f"{stamp(t0)} " + " ".join(cur))
+    if dropped:
+        lines.append("")
+        lines.append("--- Dibuang (terdengar bukan bahasa streamer, kemungkinan suara game) ---")
+        for d in dropped:
+            lines.append(f"{stamp(d['start'])} ({d['lang']}) {d['text']}")
+    if note:
+        lines.append("")
+        lines.append(note)
+    return "\n".join(lines)
+
+
+def ass_time(t: float) -> str:
+    t = max(0.0, t)
+    return f"{int(t // 3600)}:{int(t % 3600 // 60):02d}:{t % 60:05.2f}"
+
+
+def _bgr(rgb) -> str:
+    r, g, b = rgb
+    return f"&H00{b:02X}{g:02X}{r:02X}&"
+
+
+def font_family(path: str) -> str:
+    try:
+        from PIL import ImageFont
+        return ImageFont.truetype(path, 20).getname()[0]
+    except Exception:
+        return "Arial"
+
+
+def build_ass(words, W, H, vertical, style, pos, color, mutes, family, dur) -> str:
+    """Susun file subtitle ASS: kelompok 2-4 kata, kata aktif menyala."""
+    if vertical:
+        fsize, max_chars, mside = int(80 * W / 1080), 18, int(60 * W / 1080)
+    else:
+        fsize, max_chars, mside = int(58 * H / 1080), 34, int(80 * H / 1080)
+    outline = max(2, round(fsize * 0.07))
+    align, mv = {"center": (5, 0), "top": (8, int(H * 0.10))}.get(pos, (2, int(H * 0.18)))
+    hl = _bgr(SUB_COLORS.get(color, SUB_COLORS["yellow"]))
+
+    toks = []
+    for w in words:
+        raw = w["raw"]
+        t = raw.strip(",.;:\"'()[]…-–—").upper().replace("{", "").replace("}", "").replace("\\", "")
+        if not t:
+            continue
+        wd = max(w["end"] - w["start"], 0.05)
+        if any(min(w["end"], m["at"] + m["dur"]) - max(w["start"], m["at"]) > 0.5 * wd
+               for m in mutes):
+            t = "***"      # kata yang (sebagian besar) dibisukan disensor juga di subtitle
+        toks.append({"t": t, "start": w["start"], "end": max(w["end"], w["start"] + 0.05),
+                     "brk": raw[-1:] in ".?!"})
+
+    groups, cur = [], []
+    for w in toks:
+        if cur:
+            joined = len(" ".join(x["t"] for x in cur)) + 1 + len(w["t"])
+            if (joined > max_chars or len(cur) >= 4 or cur[-1]["brk"]
+                    or w["start"] - cur[-1]["end"] > 0.6):
+                groups.append(cur); cur = []
+        cur.append(w)
+    if cur:
+        groups.append(cur)
+
+    head = (f"[Script Info]\nScriptType: v4.00+\nPlayResX: {W}\nPlayResY: {H}\n"
+            f"WrapStyle: 2\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+            "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+            "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            f"Style: Default,{family},{fsize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+            f"-1,0,0,0,100,100,0,0,1,{outline},2,{align},{mside},{mside},{mv},1\n\n"
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+
+    white = "&H00FFFFFF&"
+    lines = []
+    for gi, g in enumerate(groups):
+        nxt = groups[gi + 1][0]["start"] if gi + 1 < len(groups) else dur
+        g_end = min(g[-1]["end"] + 0.2, nxt, dur)
+        if style == "plain":
+            lines.append(f"Dialogue: 0,{ass_time(g[0]['start'])},{ass_time(max(g_end, g[0]['start'] + 0.1))},"
+                         f"Default,,0,0,0,,{' '.join(x['t'] for x in g)}")
+            continue
+        for i, w in enumerate(g):
+            start = w["start"]
+            end = g[i + 1]["start"] if i + 1 < len(g) else g_end
+            end = max(end, start + 0.08)
+            text = " ".join(
+                (f"{{\\c{hl}}}{x['t']}{{\\c{white}}}" if j == i else x["t"]) for j, x in enumerate(g))
+            lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(min(end, dur + 0.5))},"
+                         f"Default,,0,0,0,,{text}")
+    return head + "\n".join(lines) + "\n"
+
+
+def make_subs(jid, req: ClipReq, raw: Path, src: str, dur: float, mutes: list,
+              setp, temp: list, t0: float):
+    """Buat file subtitle untuk klip ini. Return info untuk filter ffmpeg, atau None."""
+    sw, sh = (int(v) for v in src.split("x")[:2])
+    W, H = (1080, 1920) if req.vertical else (sw, sh)
+    size = req.sub_model if req.sub_model in ("tiny", "base", "small", "medium", "turbo") else "small"
+
+    def on_model():
+        setp(t0, "Menyiapkan model AI",
+             f"model '{size}': pertama kali harus mengunduh dulu (sekali saja), bisa beberapa menit")
+
+    def on_prog(frac):
+        setp(t0 + frac * (58 - t0), "Membuat subtitle (AI mendengarkan)",
+             f"{frac * dur:.0f} dari {dur:.0f} detik")
+
+    setp(t0, "Membuat subtitle (AI mendengarkan)", "memuat model...")
+    def on_filter(i, total):
+        setp(58, "Menyaring suara streamer", f"bagian {i + 1} dari {total}")
+
+    words, dropped, note = transcribe_words(raw, req.sub_lang, size, dur, on_model, on_prog,
+                                            req.sub_sens, req.sub_terms, req.sub_only, on_filter)
+    if not words:
+        setp(58, "Tidak ada ucapan terdeteksi", "klip dibuat tanpa subtitle")
+        return {"empty": True, "transcript": transcript_text([], dropped, note)}
+    tpath = _first_existing(TEXT_FONTS)
+    if not tpath:
+        raise RuntimeError("Font teks tidak ditemukan. Atur TEXT_FONTS di main.py.")
+    fdir = f"fonts_{jid}"
+    (CLIPS / fdir).mkdir(exist_ok=True)
+    temp.append(fdir)
+    shutil.copy(tpath, CLIPS / fdir / Path(tpath).name)
+    name = f"{jid}.ass"
+    temp.append(name)
+    (CLIPS / name).write_text(
+        build_ass(words, W, H, req.vertical, req.sub_style, req.sub_pos, req.sub_color,
+                  mutes, font_family(tpath), dur), encoding="utf-8")
+    return {"ass": name, "fonts": fdir, "transcript": transcript_text(words, dropped, note), "count": len(words)}
 
 
 # ---------------------------------------------------------------- proses klip
@@ -444,6 +716,7 @@ def run_job(jid, req: ClipReq, s: float, e: float, items: list, mutes: list):
     raw = CLIPS / f"{jid}_raw.mp4"
     final = CLIPS / f"{jid}.mp4"
     temp = []
+    dl_end = 40 if req.subs else 55      # bagian bar progres untuk unduhan
 
     def setp(pct, stage, detail=""):
         job.update(percent=round(min(pct, 100), 1), stage=stage, detail=detail)
@@ -452,7 +725,7 @@ def run_job(jid, req: ClipReq, s: float, e: float, items: list, mutes: list):
         m = re.search(r"\btime=(\d+):(\d+):([\d.]+)", line)
         if m:
             t = int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3])
-            setp(2 + min(t / dur, 1) * 53, "Mengunduh potongan dari YouTube",
+            setp(2 + min(t / dur, 1) * (dl_end - 2), "Mengunduh potongan dari YouTube",
                  f"{t:.0f} dari {dur:.0f} detik")
             return True
         if not line.startswith("PROG|"):
@@ -471,7 +744,7 @@ def run_job(jid, req: ClipReq, s: float, e: float, items: list, mutes: list):
                 bits.append(speed.strip())
             if eta.strip() not in ("", "NA", "Unknown"):
                 bits.append("sisa " + eta.strip())
-            setp(2 + p * 0.53, "Mengunduh potongan dari YouTube", " · ".join(bits))
+            setp(2 + p * (dl_end - 2) / 100, "Mengunduh potongan dari YouTube", " · ".join(bits))
         except Exception:
             pass
         return True
@@ -513,17 +786,25 @@ def run_job(jid, req: ClipReq, s: float, e: float, items: list, mutes: list):
                          f"percobaan {attempt + 1} dari 3, tunggu sebentar...")
                     time.sleep(5 * attempt)
 
-            setp(55, "Memeriksa video")
+            setp(dl_end, "Memeriksa video")
             src = run(["ffprobe", "-v", "error", "-select_streams", "v:0",
                        "-show_entries", "stream=width,height",
                        "-of", "csv=p=0:s=x", str(raw)]).strip()
 
+            subs, transcript = None, None
+            if req.subs:
+                subs = make_subs(jid, req, raw, src, dur, mutes, setp, temp, dl_end + 2)
+                transcript = subs["transcript"] or "(tidak ada ucapan terdeteksi)"
+                if subs.get("empty"):
+                    subs = None
             setp(58, "Memproses video (crop, teks, suara)")
-            encode(req, items, mutes, jid, raw, final, src, on_enc, temp)
+            encode(req, items, mutes, jid, raw, final, src, on_enc, temp, subs)
 
         meta = {"id": jid, "title": req.title or f"Klip {jid}", "url": req.url,
                 "start": req.start, "end": req.end, "vertical": req.vertical,
                 "src": src, "file": f"/clips/{jid}.mp4"}
+        if transcript is not None:
+            meta["transcript"] = transcript
         (CLIPS / f"{jid}.json").write_text(json.dumps(meta))
         job.update(status="done", result=meta)
         setp(100, "Selesai")
@@ -537,7 +818,11 @@ def run_job(jid, req: ClipReq, s: float, e: float, items: list, mutes: list):
     finally:
         raw.unlink(missing_ok=True)
         for name in temp:
-            (CLIPS / name).unlink(missing_ok=True)
+            p = CLIPS / name
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
 
 
 @app.post("/api/clip")
@@ -585,6 +870,15 @@ def clip(req: ClipReq):
                                      f"({e - s:.0f} detik). Waktu dihitung dari awal klip.")
         d = min(max(m.dur, 0.1), 30.0, (e - s) - at)
         mutes.append({"at": at, "dur": d, "beep": bool(m.beep)})
+
+    if req.sub_lang not in ("id", "en", "auto"):
+        req.sub_lang = "id"
+    if req.sub_sens not in ("normal", "max"):
+        req.sub_sens = "normal"
+    if req.sub_pos not in ("bottom", "center", "top"):
+        req.sub_pos = "bottom"
+    if req.sub_style not in ("word", "plain"):
+        req.sub_style = "word"
 
     jid = uuid.uuid4().hex[:10]
     JOBS[jid] = {"status": "running", "percent": 0, "stage": "Memulai",

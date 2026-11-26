@@ -68,6 +68,17 @@ button:disabled{opacity:.5;cursor:wait}
 .clip summary{cursor:pointer;color:var(--muted)}
 .clip pre{white-space:pre-wrap;margin:6px 0 0;font:inherit;max-height:220px;overflow:auto;
   padding:8px;border:1px solid var(--line);border-radius:6px}
+.qrow{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:8px}
+.qtop{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.qtitle{font-weight:600;overflow-wrap:anywhere}
+.qmeta{color:var(--muted);font-size:.85rem}
+.badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.badge{font-size:.75rem;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}
+.qstat{margin-top:8px;font-size:.88rem;overflow-wrap:anywhere}
+.qstat.err{color:var(--warn)}
+.qbar{height:6px;border-radius:4px;background:var(--line);overflow:hidden;margin-top:6px}
+.qbar>div{height:100%;background:var(--accent);transition:width .4s}
+.qrow button.small{padding:4px 10px;font-size:.82rem;font-weight:500}
 .hidden{display:none}
 </style>
 </head>
@@ -120,6 +131,35 @@ button:disabled{opacity:.5;cursor:wait}
           <input id="fsize" type="text" value="25"></div>
         <div><label for="foff">Geser facecam menjauhi tepi (%)</label>
           <input id="foff" type="text" value="17"></div>
+      </div>
+
+      <div class="items">
+        <h3>Gaya otomatis</h3>
+        <p class="hint">Variasi tampilan supaya klipmu tidak itu-itu saja. Pilih &quot;Acak per klip&quot; dan setiap klip, termasuk di antrean, otomatis dapat gaya berbeda dan tidak mengulang gaya klip sebelumnya. Tata letak berlaku untuk mode vertikal 9:16; tata letak yang memakai facecam butuh posisi facecam diisi di atas.</p>
+        <div class="row" style="margin-top:8px">
+          <div><label for="layout">Tata letak (vertikal)</label>
+            <select id="layout">
+              <option value="split" selected>Facecam atas, game bawah</option>
+              <option value="split_big">Facecam besar (50/50)</option>
+              <option value="split_small">Facecam kecil, game besar</option>
+              <option value="bubble">Game penuh + facecam bulat</option>
+              <option value="blur">Game di tengah + latar blur</option>
+              <option value="game">Game saja</option>
+              <option value="random">Acak per klip</option>
+            </select></div>
+          <div><label for="pack">Paket gaya (warna teks, subtitle, video)</label>
+            <select id="pack">
+              <option value="manual" selected>Manual (pakai pengaturan sendiri)</option>
+              <option value="klasik">Klasik</option>
+              <option value="neon">Neon</option>
+              <option value="hangat">Hangat</option>
+              <option value="dingin">Dingin</option>
+              <option value="kontras">Kontras</option>
+              <option value="sinema">Sinematik</option>
+              <option value="random">Acak per klip</option>
+            </select></div>
+        </div>
+        <p class="hint" id="stylehint"></p>
       </div>
 
       <div class="items">
@@ -184,8 +224,6 @@ button:disabled{opacity:.5;cursor:wait}
             </select></div>
           <div style="flex:2 1 280px"><label for="subterms">Istilah / nama khusus (opsional)</label>
             <input id="subterms" type="text" placeholder="mis. Jason, Lucia, Vice City, GTA"></div>
-          <div style="flex:1 1 100%"><label class="check" style="margin:0"><input type="checkbox" id="subonly" checked>
-            Hanya suara streamer: buang bagian yang bahasanya beda (misalnya dialog game berbahasa Inggris). Tidak berlaku kalau bahasa diatur Otomatis.</label></div>
           <div><label for="subcolor">Warna kata menyala</label>
             <select id="subcolor">
               <option value="yellow">Kuning</option>
@@ -196,7 +234,12 @@ button:disabled{opacity:.5;cursor:wait}
         </div>
       </div>
 
-      <div style="margin-top:14px"><button id="make">Buat klip</button></div>
+      <div class="row" style="margin-top:14px;align-items:center">
+        <button id="make" style="flex:0 0 auto">Buat klip sekarang</button>
+        <button class="ghost" id="addq" style="flex:0 0 auto">+ Tambah ke antrean</button>
+        <label class="check" style="margin:0;flex:1 1 260px"><input type="checkbox" id="clearafter" checked>
+          Kosongkan teks judul, teks tambahan, dan mute setelah ditambahkan</label>
+      </div>
     </div>
 
     <div id="prog" class="prog hidden">
@@ -204,6 +247,17 @@ button:disabled{opacity:.5;cursor:wait}
       <div id="progtext"></div>
     </div>
     <div id="status" class="status" role="status"></div>
+  </section>
+
+  <section class="panel hidden" id="qpanel">
+    <h2>Antrean klip <span id="qsum" class="qmeta"></span></h2>
+    <p class="hint">Atur satu klip lengkap lalu klik &quot;+ Tambah ke antrean&quot;. Ubah waktu (atau link video) untuk klip berikutnya dan ulangi. Setelah semua masuk, klik &quot;Proses antrean&quot;: klip dikerjakan satu per satu sesuai urutan. Waktu teks dan mute dihitung dari awal tiap klip. Selama server menyala, halaman boleh di-refresh tanpa menghentikan antrean.</p>
+    <div id="qlist"></div>
+    <div class="row" style="margin-top:12px;align-items:center">
+      <button id="qgo" class="hidden" style="flex:0 0 auto">Proses antrean</button>
+      <button class="ghost hidden" id="qcancel" style="flex:0 0 auto">Batalkan sisa antrean</button>
+      <button class="ghost hidden" id="qclear" style="flex:0 0 auto">Bersihkan daftar</button>
+    </div>
   </section>
 
   <section class="panel">
@@ -406,6 +460,35 @@ function collectMutes(){
 $('addmute').onclick = addMute;
 $('subs').onchange = () => $('subopts').classList.toggle('hidden', !$('subs').checked);
 
+// ---------- gaya otomatis
+const LAYOUT_SHORT = {split:'Facecam atas', split_big:'Facecam besar', split_small:'Facecam kecil',
+  bubble:'Facecam bulat', blur:'Latar blur', game:'Game saja', random:'Tata letak acak'};
+const PACK_SHORT = {klasik:'Klasik', neon:'Neon', hangat:'Hangat', dingin:'Dingin',
+  kontras:'Kontras', sinema:'Sinematik', random:'Paket acak'};
+const LAYOUT_HINT = {
+  split:'Facecam di atas, game di bawah.',
+  split_big:'Facecam dan game sama besar (50/50).',
+  split_small:'Facecam kecil di atas, game lebih besar.',
+  bubble:'Game penuh layar, facecam bulat kecil di pojok kanan atas.',
+  blur:'Seluruh layar game di tengah, latar buram dari video yang sama.',
+  game:'Game saja, tanpa facecam.',
+  random:'Setiap klip dapat tata letak berbeda, tidak mengulang klip sebelumnya.'};
+const PACK_HINT = {
+  manual:'Warna mengikuti pengaturan manual: kotak teks putih dan warna subtitle pilihanmu.',
+  klasik:'Kotak putih, kata subtitle kuning, warna video asli.',
+  neon:'Kotak gelap bertulisan cyan, kata subtitle merah muda, warna video lebih pekat.',
+  hangat:'Kotak krem, kata subtitle oranye, warna video lebih hangat.',
+  dingin:'Kotak biru muda, kata subtitle cyan, warna video lebih dingin.',
+  kontras:'Kotak kuning, kata subtitle merah, kontras tinggi.',
+  sinema:'Kotak hitam, kata subtitle kuning, warna video ala film.',
+  random:'Setiap klip dapat paket berbeda, tidak mengulang paket klip sebelumnya.'};
+function updateStyleHint(){
+  $('stylehint').textContent = `${LAYOUT_HINT[$('layout').value]} ${PACK_HINT[$('pack').value]}`;
+}
+$('layout').onchange = updateStyleHint;
+$('pack').onchange = updateStyleHint;
+updateStyleHint();
+
 function showProg(p, stage, detail){
   $('prog').classList.remove('hidden');
   $('barfill').style.width = p + '%';
@@ -420,31 +503,35 @@ function showProg(p, stage, detail){
   }
 }
 
+function buildPayload(){
+  return {
+    layout: $('layout').value, pack: $('pack').value,
+    url: $('url').value.trim(), start: $('start').value, end: $('end').value,
+    vertical: $('vertical').checked, title: $('title').value.trim(),
+    hook: $('hook').value.trim(),
+    hook_secs: isNaN(parseFloat($('hsecs').value)) ? 5 : parseFloat($('hsecs').value),
+    facecam: $('facecam').value,
+    face_size: (parseFloat($('fsize').value) || 25) / 100,
+    face_off: (parseFloat($('foff').value) || 0) / 100,
+    items: collectItems(),
+    mutes: collectMutes(),
+    subs: $('subs').checked, sub_lang: $('sublang').value, sub_model: $('submodel').value,
+    sub_style: $('substyle').value, sub_pos: $('subpos').value, sub_color: $('subcolor').value,
+    sub_sens: $('subsens').value, sub_terms: $('subterms').value.trim(),
+    sfx_vol: (isNaN(parseFloat($('sfxvol').value)) ? 100 : parseFloat($('sfxvol').value)) / 100
+  };
+}
+
 $('make').onclick = async () => {
   const btn = $('make'); btn.disabled = true;
   status('');
   showProg(0, 'Memulai', '');
   try {
-    const {job} = await post('/api/clip', {
-      url: $('url').value.trim(), start: $('start').value, end: $('end').value,
-      vertical: $('vertical').checked, title: $('title').value.trim(),
-      hook: $('hook').value.trim(),
-      hook_secs: isNaN(parseFloat($('hsecs').value)) ? 5 : parseFloat($('hsecs').value),
-      facecam: $('facecam').value,
-      face_size: (parseFloat($('fsize').value) || 25) / 100,
-      face_off: (parseFloat($('foff').value) || 0) / 100,
-      items: collectItems(),
-      mutes: collectMutes(),
-      subs: $('subs').checked, sub_lang: $('sublang').value, sub_model: $('submodel').value,
-      sub_style: $('substyle').value, sub_pos: $('subpos').value, sub_color: $('subcolor').value,
-      sub_sens: $('subsens').value, sub_terms: $('subterms').value.trim(),
-      sub_only: $('subonly').checked,
-      sfx_vol: (isNaN(parseFloat($('sfxvol').value)) ? 100 : parseFloat($('sfxvol').value)) / 100
-    });
+    const {job} = await post('/api/clip', buildPayload());
     while (true) {
       await new Promise(r => setTimeout(r, 800));
       const j = await api('/api/jobs/' + job);
-      showProg(j.percent, j.stage, j.detail);
+      showProg(j.percent, j.status === 'queued' ? `Menunggu giliran (antrean ke-${j.position || '?'})` : j.stage, j.detail);
       if (j.status === 'error') throw new Error(j.error || 'Gagal membuat klip');
       if (j.status === 'done') break;
     }
@@ -457,6 +544,158 @@ $('make').onclick = async () => {
   btn.disabled = false;
 };
 
+// ---------- antrean banyak klip
+const LS = {
+  get(k, d){ try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch { return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+let drafts = LS.get('yc.drafts', []);   // belum dikirim
+let jobs = LS.get('yc.jobs', []);       // sudah masuk antrean server
+const ACTIVE = s => s === 'queued' || s === 'running';
+const saveQ = () => { LS.set('yc.drafts', drafts); LS.set('yc.jobs', jobs); };
+function el(tag, cls, text){
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function badgesOf(p){
+  const b = [];
+  if (p.vertical) b.push('9:16');
+  if (p.vertical && p.layout && p.layout !== 'split') b.push(LAYOUT_SHORT[p.layout] || p.layout);
+  if (p.pack && p.pack !== 'manual') b.push(PACK_SHORT[p.pack] || p.pack);
+  if (p.hook) b.push('judul');
+  if (p.subs) b.push('subtitle');
+  const t = (p.items || []).filter(i => i.text).length;
+  const f = (p.items || []).filter(i => i.sfx).length;
+  if (t) b.push(t + ' teks');
+  if (f) b.push(f + ' suara');
+  if ((p.mutes || []).length) b.push(p.mutes.length + ' mute');
+  return b;
+}
+function rowHead(n, title, range, bs, btn){
+  const row = el('div', 'qrow');
+  const top = el('div', 'qtop');
+  const left = el('div');
+  left.append(el('div', 'qtitle', `#${n} ${title || '(tanpa judul)'}`), el('div', 'qmeta', range));
+  top.append(left);
+  if (btn) top.append(btn);
+  row.append(top);
+  if (bs.length){
+    const bd = el('div', 'badges');
+    bs.forEach(x => bd.append(el('span', 'badge', x)));
+    row.append(bd);
+  }
+  return row;
+}
+function renderQueue(){
+  const list = $('qlist'); list.innerHTML = '';
+  jobs.forEach((j, i) => {
+    let btn = null;
+    if (j.state.status === 'queued'){
+      btn = el('button', 'ghost small', 'Batalkan'); btn.type = 'button';
+      btn.onclick = async () => {
+        try { await api('/api/jobs/' + j.job + '/cancel', {method:'POST'}); } catch(e){ status(e.message, true); }
+        pollJobs();
+      };
+    }
+    const plain = j.badges.filter(x => !Object.values(LAYOUT_SHORT).includes(x) && !Object.values(PACK_SHORT).includes(x));
+    const row = rowHead(i + 1, j.title, j.range, j.style ? plain.concat(['Gaya: ' + j.style]) : j.badges, btn);
+    const st = j.state;
+    let line;
+    if (st.status === 'queued') line = el('div', 'qstat', `Menunggu giliran (antrean ke-${st.position || '?'})`);
+    else if (st.status === 'running'){
+      line = el('div', 'qstat', `${Math.round(st.percent || 0)}% · ${st.stage || ''}${st.detail ? ' — ' + st.detail : ''}`);
+      const bar = el('div', 'qbar'); const f = el('div'); f.style.width = (st.percent || 0) + '%'; bar.append(f);
+      row.append(line, bar); line = null;
+    }
+    else if (st.status === 'done') line = el('div', 'qstat', '✓ Selesai, ada di daftar Klip kamu');
+    else if (st.status === 'cancelled') line = el('div', 'qstat', 'Dibatalkan');
+    else line = el('div', 'qstat err', st.error || 'Gagal');
+    if (line) row.append(line);
+    list.append(row);
+  });
+  drafts.forEach((p, i) => {
+    const del = el('button', 'ghost small', 'Hapus'); del.type = 'button';
+    del.onclick = () => { drafts.splice(i, 1); saveQ(); renderQueue(); };
+    const row = rowHead(jobs.length + i + 1, p.title, `${p.start} sampai ${p.end}`, badgesOf(p), del);
+    row.append(el('div', 'qstat', 'Belum diproses'));
+    list.append(row);
+  });
+  const done = jobs.filter(j => j.state.status === 'done').length;
+  $('qsum').textContent = jobs.length ? `· ${done} dari ${jobs.length} selesai` : '';
+  $('qpanel').classList.toggle('hidden', !drafts.length && !jobs.length);
+  $('qgo').classList.toggle('hidden', !drafts.length);
+  $('qgo').textContent = `Proses antrean (${drafts.length} klip)`;
+  $('qcancel').classList.toggle('hidden', !jobs.some(j => j.state.status === 'queued'));
+  $('qclear').classList.toggle('hidden', !drafts.length && !jobs.some(j => !ACTIVE(j.state.status)));
+}
+
+let pollTimer = null, polling = false;
+async function pollJobs(){
+  if (polling) return;
+  polling = true;
+  try {
+    for (const j of jobs.filter(x => ACTIVE(x.state.status))){
+      const prev = j.state.status;
+      try { j.state = await api('/api/jobs/' + j.job); }
+      catch(e){ j.state = {status:'error', error: 'Server tidak mengenali klip ini (server mungkin sudah di-restart).'}; }
+      if (prev !== 'done' && j.state.status === 'done') loadClips();
+    }
+    saveQ(); renderQueue();
+  } finally { polling = false; }
+  if (!jobs.some(x => ACTIVE(x.state.status)) && pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+}
+function startPolling(){
+  if (!pollTimer) pollTimer = setInterval(pollJobs, 1000);
+  pollJobs();
+}
+
+$('addq').onclick = () => {
+  const url = $('url').value.trim();
+  if (!videoId(url)) return status('Link YouTube tidak dikenali.', true);
+  const s = secs($('start').value), e = secs($('end').value);
+  if (isNaN(s) || isNaN(e) || e <= s) return status('Rentang waktu tidak valid.', true);
+  const p = buildPayload();
+  const taken = [...drafts, ...jobs].some(x => x.title === p.title);
+  if (taken) p.title = `${p.title || 'Klip'} (${drafts.length + jobs.length + 1})`;
+  drafts.push(p); saveQ(); renderQueue();
+  if ($('clearafter').checked){ $('hook').value = ''; $('itemlist').innerHTML = ''; $('mutelist').innerHTML = ''; }
+  status(`Klip #${jobs.length + drafts.length} masuk daftar. Ubah waktu atau link untuk klip berikutnya, lalu klik Proses antrean.`);
+};
+
+$('qgo').onclick = async () => {
+  if (!drafts.length) return;
+  const btn = $('qgo'); btn.disabled = true;
+  try {
+    const r = await post('/api/batch', {clips: drafts});
+    r.jobs.forEach((j, i) => jobs.push({
+      job: j.job, title: drafts[i].title, range: `${drafts[i].start} sampai ${drafts[i].end}`,
+      badges: badgesOf(drafts[i]), style: j.style || '',
+      state: {status:'queued', percent:0, stage:'Menunggu giliran', detail:'', position:null}
+    }));
+    drafts = []; saveQ(); renderQueue(); startPolling();
+    status(`${r.jobs.length} klip masuk antrean dan mulai dikerjakan.`);
+  } catch(e){ status(e.message, true); }
+  btn.disabled = false;
+};
+
+$('qcancel').onclick = async () => {
+  for (const j of jobs.filter(x => x.state.status === 'queued')){
+    try { await api('/api/jobs/' + j.job + '/cancel', {method:'POST'}); } catch {}
+  }
+  pollJobs();
+};
+
+$('qclear').onclick = () => {
+  drafts = [];
+  jobs = jobs.filter(j => ACTIVE(j.state.status));
+  saveQ(); renderQueue();
+};
+
+renderQueue();
+if (jobs.some(j => ACTIVE(j.state.status))) startPolling();
+
 async function loadClips(){
   const items = await api('/api/clips');
   $('empty').classList.toggle('hidden', items.length > 0);
@@ -467,7 +706,7 @@ async function loadClips(){
     const v = document.createElement('video'); v.controls = true; v.src = c.file; v.preload = 'metadata';
     const h = document.createElement('h3'); h.textContent = c.title;
     const s = document.createElement('small');
-    s.textContent = `${c.start} sampai ${c.end}${c.vertical ? ' (9:16)' : ''}${c.src ? ' · sumber ' + c.src : ''}`;
+    s.textContent = `${c.start} sampai ${c.end}${c.vertical ? ' (9:16)' : ''}${c.src ? ' · sumber ' + c.src : ''}${c.style ? ' · ' + c.style : ''}`;
     const acts = document.createElement('div'); acts.className = 'acts';
     const dl = document.createElement('a'); dl.href = c.file; dl.download = c.title + '.mp4'; dl.textContent = 'Unduh';
     const del = document.createElement('button'); del.textContent = 'Hapus';

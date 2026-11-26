@@ -1,4 +1,4 @@
-import json, re, shutil, subprocess, sys, threading, time, uuid
+import json, queue, random, re, shutil, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from typing import List
 
@@ -88,7 +88,12 @@ class ClipReq(BaseModel):
     sub_color: str = "yellow" # warna kata aktif
     sub_sens: str = "normal"  # normal | max (tanpa filter VAD, tangkap semua ucapan)
     sub_terms: str = ""       # istilah/nama khusus untuk membantu AI (mis. nama karakter)
-    sub_only: bool = True     # buang bagian yang bahasanya beda (dialog game), simpan suara streamer
+    layout: str = "split"     # split | split_big | split_small | bubble | blur | game | random
+    pack: str = "manual"      # manual | klasik | neon | hangat | dingin | kontras | sinema | random
+
+
+class BatchReq(BaseModel):
+    clips: List[ClipReq]
 
 
 @app.post("/api/info")
@@ -181,6 +186,61 @@ def delete_sfx(name: str):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- gaya otomatis
+
+LAYOUTS = {"split": "Facecam atas", "split_big": "Facecam besar", "split_small": "Facecam kecil",
+           "bubble": "Facecam bulat", "blur": "Latar blur", "game": "Game saja"}
+SPLIT_TOP = {"split": 700, "split_big": 960, "split_small": 520}   # tinggi panel facecam (px)
+CAM_LAYOUTS = {"split", "split_big", "split_small", "bubble"}      # butuh posisi facecam
+PACKS = {
+    "klasik": {"label": "Klasik", "bg": (255, 255, 255, 242), "fg": (0, 0, 0, 255),
+               "hl": (255, 229, 0), "grade": ""},
+    "neon": {"label": "Neon", "bg": (18, 16, 48, 235), "fg": (0, 255, 235, 255),
+             "hl": (255, 60, 170), "grade": "eq=contrast=1.1:saturation=1.3"},
+    "hangat": {"label": "Hangat", "bg": (255, 238, 205, 245), "fg": (90, 35, 0, 255),
+               "hl": (255, 150, 0), "grade": "colorbalance=rs=0.06:bs=-0.06,eq=saturation=1.12"},
+    "dingin": {"label": "Dingin", "bg": (225, 240, 255, 245), "fg": (10, 45, 95, 255),
+               "hl": (0, 200, 255), "grade": "colorbalance=rs=-0.05:bs=0.07,eq=contrast=1.05"},
+    "kontras": {"label": "Kontras", "bg": (255, 221, 0, 250), "fg": (0, 0, 0, 255),
+                "hl": (255, 60, 60), "grade": "eq=contrast=1.2:saturation=1.2"},
+    "sinema": {"label": "Sinematik", "bg": (10, 10, 10, 225), "fg": (255, 255, 255, 255),
+               "hl": (255, 229, 0),
+               "grade": "eq=contrast=1.1:saturation=0.92:brightness=-0.02,colorbalance=bs=0.04:rh=0.04"},
+}
+STYLE_LOCK = threading.Lock()
+LAST_STYLE: dict = {}
+
+
+def _pick(pool, key):
+    """Pilih acak, tapi tidak sama dengan pilihan sebelumnya."""
+    with STYLE_LOCK:
+        choices = [x for x in pool if x != LAST_STYLE.get(key)] or list(pool)
+        c = random.choice(choices)
+        LAST_STYLE[key] = c
+        return c
+
+
+def resolve_style(req) -> str:
+    """Ubah pilihan 'acak' jadi gaya nyata untuk klip ini. Return label gaya."""
+    cam = req.facecam in ("tl", "tr", "bl", "br")
+    parts = []
+    if req.vertical:
+        layout = req.layout if (req.layout in LAYOUTS or req.layout == "random") else "split"
+        if layout == "random":
+            layout = _pick([k for k in LAYOUTS if cam or k not in CAM_LAYOUTS], "layout")
+        elif layout in CAM_LAYOUTS and not cam:
+            layout = "game"                      # layout facecam tanpa posisi facecam
+        req.layout = layout
+        parts.append(LAYOUTS[layout])
+    pack = req.pack if (req.pack in PACKS or req.pack in ("manual", "random")) else "manual"
+    if pack == "random":
+        pack = _pick(list(PACKS), "pack")
+    req.pack = pack
+    if pack in PACKS:
+        parts.append(PACKS[pack]["label"])
+    return " · ".join(parts)
+
+
 # ----------------------------------------------------- teks (judul + custom)
 
 _EM_BASE = (r"(?:[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B50\u2B55\u2B1B\u2B1C"
@@ -200,7 +260,7 @@ def _first_existing(paths):
 
 
 def make_text_png(text: str, out: Path, band_w: int = 1000, scale: float = 1.0,
-                  fit: bool = False) -> int:
+                  fit: bool = False, bg=(255, 255, 255, 242), fg=(0, 0, 0, 255)) -> int:
     """Gambar kotak putih berisi teks (emoji berwarna) ke PNG. Return tinggi kotak.
     fit=True: lebar kotak menyesuaikan isi (maksimal band_w)."""
     try:
@@ -284,14 +344,14 @@ def make_text_png(text: str, out: Path, band_w: int = 1000, scale: float = 1.0,
     img = Image.new("RGBA", (bw, band_h), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.rounded_rectangle((0, 0, bw - 1, band_h - 1), radius=min(int(22 * scale), band_h // 2),
-                        fill=(255, 255, 255, 242))
+                        fill=bg)
     for i, line in enumerate(lines):
         base_y = pad + i * lh + int(fsz * 0.95)
         x = (bw - line_w(line)) / 2
         for rw in line:
             for kind, val in rw:
                 if kind == "t":
-                    d.text((x, base_y), val, font=tf, fill=(0, 0, 0, 255), anchor="ls")
+                    d.text((x, base_y), val, font=tf, fill=fg, anchor="ls")
                     x += tf.getlength(val)
                 else:
                     em, eb = emoji_img(val, fsz)
@@ -302,21 +362,65 @@ def make_text_png(text: str, out: Path, band_w: int = 1000, scale: float = 1.0,
     return band_h
 
 
-def base_graph(req: ClipReq):
-    """Bagian dasar: crop/susun video. Hasil akhirnya berlabel [v0]."""
-    top = 700  # tinggi panel facecam (kecilkan = facecam lebih tajam)
+def make_bubble_assets(D: int, jid: str, temp: list):
+    """Topeng lingkaran + bingkai putih untuk facecam bulat."""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        raise RuntimeError("Pillow belum terpasang. Jalankan: python -m pip install pillow")
+    k = 4
+    big = D * k
+    mask = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, big - 1, big - 1), fill=255)
+    mask = mask.resize((D, D), Image.LANCZOS)
+    ring = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(ring).ellipse((0, 0, big - 1, big - 1), outline=(255, 255, 255, 255), width=8 * k)
+    ring = ring.resize((D, D), Image.LANCZOS)
+    m, r = f"{jid}_bmask.png", f"{jid}_bring.png"
+    mask.save(CLIPS / m)
+    ring.save(CLIPS / r)
+    temp.extend([m, r])
+    return m, r
+
+
+def base_graph(req: ClipReq, jid: str, temp: list):
+    """Susun tata letak. Return (graf berlabel [v0], tengah teks judul, input tambahan, jumlah input)."""
     if not req.vertical:
-        return "[0:v]null[v0]", 0
-    if req.facecam in ("tl", "tr", "bl", "br"):
+        return "[0:v]null[v0]", 0, [], 1
+    cam = req.facecam in ("tl", "tr", "bl", "br")
+    layout = req.layout if req.layout in LAYOUTS else "split"
+    if cam:
         fs = min(max(req.face_size, 0.1), 0.6)
         off = min(max(req.face_off, 0), 0.6)
         x = "0" if req.facecam[1] == "l" else "iw-ow"
         y = f"ih*{off}" if req.facecam[0] == "t" else f"ih-oh-ih*{off}"
+
+    if cam and layout in SPLIT_TOP:
+        top = SPLIT_TOP[layout]
         return (f"[0:v]split=2[a][b];"
                 f"[a]crop=iw*{fs}:iw*{fs}*{top}/1080:{x}:{y},scale=1080:{top}:flags=lanczos[face];"
                 f"[b]crop=ih*1080/{1920-top}:ih,scale=1080:{1920-top}:flags=lanczos[game];"
-                f"[face][game]vstack[v0]"), top
-    return "[0:v]crop=ih*9/16:ih,scale=1080:1920:flags=lanczos[v0]", 300
+                f"[face][game]vstack[v0]"), top, [], 1
+
+    if cam and layout == "bubble":
+        D, bx, by = 340, 1080 - 340 - 50, 130
+        mask, ring = make_bubble_assets(D, jid, temp)
+        return (f"[0:v]split=2[a][b];"
+                f"[b]crop=ih*9/16:ih,scale=1080:1920:flags=lanczos[game];"
+                f"[a]crop=iw*{fs}:iw*{fs}*700/1080:{x}:{y},crop=ih:ih,scale={D}:{D}:flags=lanczos,"
+                f"format=rgba[cam0];"
+                f"[1:v]format=gray[m];[cam0][m]alphamerge[cam];"
+                f"[game][cam]overlay=x={bx}:y={by}[bt];"
+                f"[bt][2:v]overlay=x={bx}:y={by}[v0]"), 700, ["-i", mask, "-i", ring], 3
+
+    if layout == "blur":
+        return ("[0:v]split=2[a][b];"
+                "[a]crop=ih*9/16:ih,scale=270:480,boxblur=8:2,scale=1080:1920,"
+                "eq=brightness=-0.1:saturation=1.1[bg];"
+                "[b]scale=1080:-2:flags=lanczos[fg];"
+                "[bg][fg]overlay=x=0:y=(H-h)/2[v0]"), 540, [], 1
+
+    return "[0:v]crop=ih*9/16:ih,scale=1080:1920:flags=lanczos[v0]", 300, [], 1
 
 
 def place_y(pos: str, H: int, bh: int) -> int:
@@ -336,13 +440,15 @@ def encode(req: ClipReq, items: list, mutes: list, jid: str, raw: Path, final: P
     band_w = int(W * 0.926)
     dur = max(0.1, to_seconds(req.end) - to_seconds(req.start))
 
-    g, center = base_graph(req)
-    inputs, n_in, overlays, sfx_in = [], 1, [], []
+    g, center, inputs, n_in = base_graph(req, jid, temp)
+    overlays, sfx_in = [], []
+    pk = PACKS.get(req.pack)
+    box = {"bg": pk["bg"], "fg": pk["fg"]} if pk else {}
 
     if req.vertical and req.hook.strip():
         name = f"{jid}_hook.png"
         temp.append(name)
-        bh = make_text_png(req.hook.strip(), CLIPS / name, band_w, scale)
+        bh = make_text_png(req.hook.strip(), CLIPS / name, band_w, scale, **box)
         en = f"between(t,0,{req.hook_secs})" if req.hook_secs > 0 else ""
         overlays.append((n_in, center - bh // 2, en))
         inputs += ["-i", name]
@@ -352,7 +458,7 @@ def encode(req: ClipReq, items: list, mutes: list, jid: str, raw: Path, final: P
         if it["text"].strip():
             name = f"{jid}_it{k}.png"
             temp.append(name)
-            bh = make_text_png(it["text"].strip(), CLIPS / name, band_w, scale, fit=True)
+            bh = make_text_png(it["text"].strip(), CLIPS / name, band_w, scale, fit=True, **box)
             en = f"between(t,{it['at']},{it['at'] + it['dur']})"
             overlays.append((n_in, place_y(it["pos"], H, bh), en))
             inputs += ["-i", name]
@@ -367,6 +473,9 @@ def encode(req: ClipReq, items: list, mutes: list, jid: str, raw: Path, final: P
                           str(raw)]).strip())
 
     cur = "v0"
+    if pk and pk["grade"]:
+        g += f";[v0]{pk['grade']}[vg]"          # warna video, sebelum teks ditempel
+        cur = "vg"
     for k, (idx, y, en) in enumerate(overlays):
         nxt = f"o{k}"
         enable = f":enable='{en}'" if en else ""
@@ -444,21 +553,9 @@ def decode_audio_16k(path: Path):
     return np.frombuffer(p.stdout, dtype=np.float32).copy()
 
 
-def _lang_model(WhisperModel, size: str):
-    """Model kecil untuk mengenali bahasa (cepat). Dipakai ulang kalau sudah ada."""
-    key = size if size in ("tiny", "base", "small") else "base"
-    m = WHISPER_MODELS.get(key)
-    if m is None:
-        m = WhisperModel(key, device="cpu", compute_type="int8")
-        WHISPER_MODELS[key] = m
-    return m
-
-
 def transcribe_words(path: Path, lang: str, size: str, dur: float, on_model, on_progress,
-                     sens: str = "normal", terms: str = "", only_lang: bool = False,
-                     on_filter=None):
-    """Dengarkan suara dengan Whisper (lokal).
-    Return (kata-kata, bagian yang dibuang, catatan)."""
+                     sens: str = "normal", terms: str = ""):
+    """Dengarkan suara dengan Whisper (lokal). Return daftar kata + waktunya."""
     try:
         from faster_whisper import WhisperModel
     except ModuleNotFoundError as ex:
@@ -499,68 +596,28 @@ def transcribe_words(path: Path, lang: str, size: str, dur: float, on_model, on_
         kw.pop("hotwords", None)
         segments, _ = model.transcribe(audio, **kw)
 
-    segs = []
+    words = []
     for seg in segments:
         on_progress(min(max(seg.end / dur, 0.0), 1.0))
-        ws = []
         for w in (seg.words or []):
             t = (w.word or "").strip()
             if t:
-                ws.append({"raw": t, "start": float(w.start), "end": float(w.end)})
-        if ws:
-            segs.append({"start": float(seg.start), "end": float(seg.end), "words": ws})
-
-    dropped, note = [], ""
-    if only_lang and lang != "auto" and segs:
-        try:
-            lid = _lang_model(WhisperModel, size)
-            total, kept = len(segs), []
-            secs = len(audio) / 16000
-            for i, sg in enumerate(segs):
-                if on_filter:
-                    on_filter(i, total)
-                a0 = int(max(0.0, sg["start"] - 0.2) * 16000)
-                a1 = int(min(secs, sg["end"] + 0.2) * 16000)
-                chunk = audio[a0:a1]
-                if len(chunk) < 16000 * 0.8:     # terlalu pendek untuk dinilai: simpan
-                    kept.append(sg)
-                    continue
-                top, ptop, allp = lid.detect_language(audio=chunk)[:3]
-                pt = dict(allp).get(lang, 0.0)
-                if top != lang and pt < 0.3 and ptop >= 0.5:
-                    dropped.append({"start": sg["start"], "lang": top,
-                                    "text": " ".join(w["raw"] for w in sg["words"])})
-                else:
-                    kept.append(sg)
-            segs = kept
-        except Exception as ex:                  # penyaringan gagal: pakai semua, beri tahu
-            note = f"Penyaringan bahasa gagal ({ex}); semua ucapan dipakai."
-    words = [w for sg in segs for w in sg["words"]]
-    return words, dropped, note
+                words.append({"raw": t, "start": float(w.start), "end": float(w.end)})
+    return words
 
 
-def transcript_text(words, dropped=None, note: str = "") -> str:
+def transcript_text(words) -> str:
     """Teks hasil dengar AI dengan penanda waktu, untuk dicek pengguna."""
-    def stamp(t):
-        return f"[{int(t // 60)}:{int(t % 60):02d}]"
     lines, cur, t0 = [], [], 0.0
     for w in words:
         if not cur:
             t0 = w["start"]
         cur.append(w["raw"])
         if len(cur) >= 12 or w["raw"][-1:] in ".?!":
-            lines.append(f"{stamp(t0)} " + " ".join(cur))
+            lines.append(f"[{int(t0 // 60)}:{int(t0 % 60):02d}] " + " ".join(cur))
             cur = []
     if cur:
-        lines.append(f"{stamp(t0)} " + " ".join(cur))
-    if dropped:
-        lines.append("")
-        lines.append("--- Dibuang (terdengar bukan bahasa streamer, kemungkinan suara game) ---")
-        for d in dropped:
-            lines.append(f"{stamp(d['start'])} ({d['lang']}) {d['text']}")
-    if note:
-        lines.append("")
-        lines.append(note)
+        lines.append(f"[{int(t0 // 60)}:{int(t0 % 60):02d}] " + " ".join(cur))
     return "\n".join(lines)
 
 
@@ -582,7 +639,7 @@ def font_family(path: str) -> str:
         return "Arial"
 
 
-def build_ass(words, W, H, vertical, style, pos, color, mutes, family, dur) -> str:
+def build_ass(words, W, H, vertical, style, pos, color, mutes, family, dur, hl_rgb=None) -> str:
     """Susun file subtitle ASS: kelompok 2-4 kata, kata aktif menyala."""
     if vertical:
         fsize, max_chars, mside = int(80 * W / 1080), 18, int(60 * W / 1080)
@@ -590,7 +647,7 @@ def build_ass(words, W, H, vertical, style, pos, color, mutes, family, dur) -> s
         fsize, max_chars, mside = int(58 * H / 1080), 34, int(80 * H / 1080)
     outline = max(2, round(fsize * 0.07))
     align, mv = {"center": (5, 0), "top": (8, int(H * 0.10))}.get(pos, (2, int(H * 0.18)))
-    hl = _bgr(SUB_COLORS.get(color, SUB_COLORS["yellow"]))
+    hl = _bgr(hl_rgb or SUB_COLORS.get(color, SUB_COLORS["yellow"]))
 
     toks = []
     for w in words:
@@ -661,14 +718,11 @@ def make_subs(jid, req: ClipReq, raw: Path, src: str, dur: float, mutes: list,
              f"{frac * dur:.0f} dari {dur:.0f} detik")
 
     setp(t0, "Membuat subtitle (AI mendengarkan)", "memuat model...")
-    def on_filter(i, total):
-        setp(58, "Menyaring suara streamer", f"bagian {i + 1} dari {total}")
-
-    words, dropped, note = transcribe_words(raw, req.sub_lang, size, dur, on_model, on_prog,
-                                            req.sub_sens, req.sub_terms, req.sub_only, on_filter)
+    words = transcribe_words(raw, req.sub_lang, size, dur, on_model, on_prog,
+                             req.sub_sens, req.sub_terms)
     if not words:
         setp(58, "Tidak ada ucapan terdeteksi", "klip dibuat tanpa subtitle")
-        return {"empty": True, "transcript": transcript_text([], dropped, note)}
+        return {"empty": True, "transcript": ""}
     tpath = _first_existing(TEXT_FONTS)
     if not tpath:
         raise RuntimeError("Font teks tidak ditemukan. Atur TEXT_FONTS di main.py.")
@@ -680,14 +734,18 @@ def make_subs(jid, req: ClipReq, raw: Path, src: str, dur: float, mutes: list,
     temp.append(name)
     (CLIPS / name).write_text(
         build_ass(words, W, H, req.vertical, req.sub_style, req.sub_pos, req.sub_color,
-                  mutes, font_family(tpath), dur), encoding="utf-8")
-    return {"ass": name, "fonts": fdir, "transcript": transcript_text(words, dropped, note), "count": len(words)}
+                  mutes, font_family(tpath), dur,
+                  PACKS[req.pack]["hl"] if req.pack in PACKS else None), encoding="utf-8")
+    return {"ass": name, "fonts": fdir, "transcript": transcript_text(words), "count": len(words)}
 
 
 # ---------------------------------------------------------------- proses klip
 
 JOBS: dict = {}
 JOB_LOCK = threading.Lock()
+STATE_LOCK = threading.Lock()
+JOBQ: "queue.Queue" = queue.Queue()
+WORKER = {"started": False}
 PROGRESS_LINE = re.compile(
     r"^(frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time_us|out_time_ms|"
     r"out_time|dup_frames|drop_frames|speed|progress)=")
@@ -760,7 +818,7 @@ def run_job(jid, req: ClipReq, s: float, e: float, items: list, mutes: list):
         return bool(PROGRESS_LINE.match(line))
 
     try:
-        setp(0, "Menunggu antrean")
+        setp(0, "Memulai")
         with JOB_LOCK:
             setp(2, "Mengunduh potongan dari YouTube", "Menghubungi YouTube...")
             dl_cmd = [*YTDLP, "--no-playlist", "--newline",
@@ -805,6 +863,8 @@ def run_job(jid, req: ClipReq, s: float, e: float, items: list, mutes: list):
                 "src": src, "file": f"/clips/{jid}.mp4"}
         if transcript is not None:
             meta["transcript"] = transcript
+        if job.get("style"):
+            meta["style"] = job["style"]
         (CLIPS / f"{jid}.json").write_text(json.dumps(meta))
         job.update(status="done", result=meta)
         setp(100, "Selesai")
@@ -825,8 +885,8 @@ def run_job(jid, req: ClipReq, s: float, e: float, items: list, mutes: list):
                 p.unlink(missing_ok=True)
 
 
-@app.post("/api/clip")
-def clip(req: ClipReq):
+def prepare_clip(req: ClipReq):
+    """Periksa permintaan satu klip. Return (mulai, selesai, teks tambahan, mute)."""
     try:
         s, e = to_seconds(req.start), to_seconds(req.end)
     except ValueError:
@@ -835,6 +895,8 @@ def clip(req: ClipReq):
         raise HTTPException(400, "Waktu selesai harus lebih besar dari waktu mulai")
     if e - s > 600:
         raise HTTPException(400, "Maksimal durasi klip 10 menit")
+    if not req.url.strip():
+        raise HTTPException(400, "Link video kosong")
 
     if len(req.items) > 12:
         raise HTTPException(400, "Maksimal 12 teks/efek per klip")
@@ -879,12 +941,64 @@ def clip(req: ClipReq):
         req.sub_pos = "bottom"
     if req.sub_style not in ("word", "plain"):
         req.sub_style = "word"
+    return s, e, items, mutes, resolve_style(req)
 
+
+def _worker():
+    """Satu pekerja yang mengerjakan klip satu per satu sesuai urutan masuk."""
+    while True:
+        jid, args = JOBQ.get()
+        job = JOBS.get(jid)
+        if not job:
+            continue
+        with STATE_LOCK:
+            if job["status"] == "cancelled":
+                continue
+            job.update(status="running", stage="Memulai", detail="")
+        try:
+            run_job(jid, *args)
+        except Exception as ex:                  # pengaman; run_job sudah menangani sendiri
+            job.update(status="error", error=str(ex)[-400:])
+
+
+def enqueue(req: ClipReq, prepared) -> str:
+    s, e, items, mutes, label = prepared
     jid = uuid.uuid4().hex[:10]
-    JOBS[jid] = {"status": "running", "percent": 0, "stage": "Memulai",
-                 "detail": "", "error": None, "result": None}
-    threading.Thread(target=run_job, args=(jid, req, s, e, items, mutes), daemon=True).start()
-    return {"job": jid}
+    JOBS[jid] = {"status": "queued", "percent": 0, "stage": "Menunggu giliran",
+                 "detail": "", "error": None, "result": None,
+                 "title": req.title or "", "start": req.start, "end": req.end, "style": label}
+    with STATE_LOCK:
+        if not WORKER["started"]:
+            threading.Thread(target=_worker, daemon=True).start()
+            WORKER["started"] = True
+    JOBQ.put((jid, (req, s, e, items, mutes)))
+    return jid
+
+
+@app.post("/api/clip")
+def clip(req: ClipReq):
+    return {"job": enqueue(req, prepare_clip(req))}
+
+
+@app.post("/api/batch")
+def batch(body: BatchReq):
+    """Masukkan banyak klip sekaligus. Semua diperiksa dulu; kalau ada yang salah, tidak ada yang dimasukkan."""
+    if not body.clips:
+        raise HTTPException(400, "Antrean kosong")
+    if len(body.clips) > 50:
+        raise HTTPException(400, "Maksimal 50 klip per antrean")
+    prepared = []
+    for n, c in enumerate(body.clips, 1):
+        try:
+            prepared.append(prepare_clip(c))
+        except HTTPException as ex:
+            raise HTTPException(400, f"Klip #{n}: {ex.detail}")
+    jobs = []
+    for c, p in zip(body.clips, prepared):
+        jid = enqueue(c, p)
+        jobs.append({"job": jid, "title": c.title, "start": c.start, "end": c.end,
+                     "style": JOBS[jid]["style"]})
+    return {"jobs": jobs}
 
 
 @app.get("/api/jobs/{jid}")
@@ -892,7 +1006,28 @@ def job_status(jid: str):
     job = JOBS.get(jid)
     if not job:
         raise HTTPException(404, "Job tidak ditemukan")
-    return job
+    out = dict(job)
+    if job["status"] == "queued":
+        ahead = 0
+        for k, v in JOBS.items():
+            if k == jid:
+                break
+            if v["status"] in ("queued", "running"):
+                ahead += 1
+        out["position"] = ahead + 1
+    return out
+
+
+@app.post("/api/jobs/{jid}/cancel")
+def cancel_job(jid: str):
+    job = JOBS.get(jid)
+    if not job:
+        raise HTTPException(404, "Job tidak ditemukan")
+    with STATE_LOCK:
+        if job["status"] != "queued":
+            raise HTTPException(409, "Klip ini sudah berjalan atau selesai, tidak bisa dibatalkan")
+        job.update(status="cancelled", stage="Dibatalkan", detail="")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- daftar klip
